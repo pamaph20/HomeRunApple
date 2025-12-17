@@ -1,0 +1,58 @@
+from fastapi import FastAPI, HTTPException
+import httpx
+
+app = FastAPI()
+
+MLB_LIVE_FEED = "https://statsapi.mlb.com/api/v1.1/game/{gamePk}/feed/live"
+
+
+def format_play(play: dict, teams: dict):
+    """
+    Converts a full MLB play object into your structured output
+    """
+    result = play.get("result", {})
+    about = play.get("about", {})
+
+    return {
+        "Game": {
+            "Inning": {
+                "Half": about.get("halfInning"),
+                "Inning#": about.get("inning"),
+            },
+            "Score": {
+                f"awayScore: {teams['away']}": result.get("awayScore"),
+                f"homeScore: {teams['home']}": result.get("homeScore"),
+            },
+            "Game event": result.get("description"),
+        }
+    }
+
+
+@app.get("/formatted/game/{gamePk}")
+async def get_latest_completed_play(gamePk: int):
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.get(MLB_LIVE_FEED.format(gamePk=gamePk))
+
+    if r.status_code != 200:
+        raise HTTPException(status_code=500, detail="Failed to fetch MLB live feed")
+
+    data = r.json()
+
+    # ---- TEAM NAMES ----
+    teams_data = data.get("gameData", {}).get("teams", {})
+    teams = {
+        "home": teams_data.get("home", {}).get("name", "Unknown Home"),
+        "away": teams_data.get("away", {}).get("name", "Unknown Away"),
+    }
+
+    # ---- PLAYS ----
+    all_plays = data.get("liveData", {}).get("plays", {}).get("allPlays", [])
+    if not all_plays:
+        return {"message": "No play data yet"}
+
+    # ---- FIND LAST COMPLETED AT-BAT ----
+    for play in reversed(all_plays):
+        if play.get("result") and play.get("about", {}).get("isComplete"):
+            return format_play(play, teams)
+
+    return {"message": "No completed at-bats yet"}
